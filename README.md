@@ -12,3 +12,11 @@
 
 1. 获取依赖：`flutter pub get`
 2. 启动：`flutter run`
+
+## backend
+
+```
+cd backend
+npm install
+npm start
+```
