@@ -94,6 +94,71 @@ app.delete('/api/milestones/:id', (req, res) => {
     }
 });
 
+app.put('/api/milestones/:id', upload.array('images'), (req, res) => {
+    try {
+        const id = req.params.id;
+        console.log(`\n--- Update Request for ID: ${id} ---`);
+        let eventData = {};
+        
+        if (req.body.event) {
+            try {
+                eventData = typeof req.body.event === 'string' ? JSON.parse(req.body.event) : req.body.event;
+            } catch (e) {
+                eventData = req.body;
+            }
+        } else {
+            eventData = req.body;
+        }
+
+        const db = getDatabase();
+        const index = db.findIndex(m => String(m.id) === String(id));
+        if (index === -1) {
+            return res.status(404).json({ error: 'Milestone not found' });
+        }
+
+        const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+        const host = req.get('host');
+        const baseUrl = `${protocol}://${host}`;
+        
+        // New files uploaded
+        const newImageUrls = req.files ? req.files.map(file => `${baseUrl}/uploads/${file.filename}`) : [];
+        
+        // Existing images to keep (passed as a JSON array in body.existingImages or similar)
+        let existingImages = [];
+        if (req.body.existingImages) {
+            try {
+                existingImages = typeof req.body.existingImages === 'string' 
+                    ? JSON.parse(req.body.existingImages) 
+                    : req.body.existingImages;
+            } catch (e) {
+                existingImages = [];
+            }
+        }
+
+        // Update the milestone
+        db[index] = {
+            ...db[index],
+            title: eventData.title || db[index].title,
+            description: eventData.description !== undefined ? eventData.description : db[index].description,
+            date: eventData.date || db[index].date,
+            owner: eventData.owner !== undefined ? parseInt(eventData.owner) : db[index].owner,
+            images: [...existingImages, ...newImageUrls],
+            updatedAt: new Date().toISOString()
+        };
+
+        saveToDatabase(db);
+        console.log('Updated milestone with ID:', id);
+
+        res.json({
+            message: 'Milestone updated successfully',
+            milestone: db[index]
+        });
+    } catch (error) {
+        console.error('UPDATE ERROR:', error);
+        res.status(500).json({ error: 'Internal server error', details: error.message });
+    }
+});
+
 app.post('/api/milestones', upload.array('images'), (req, res) => {
     try {
         console.log('\n--- New Upload Request ---');

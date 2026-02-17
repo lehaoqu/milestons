@@ -96,11 +96,22 @@ class _MilestoneHomePageState extends State<MilestoneHomePage> {
   double _scaleFactor = 1.0;
   double _baseScaleFactor = 1.0;
   List<MilestoneEvent> _events = [];
+  String? _localImagesPath;
+  // Track expanded cards at the top level to allow global collapse
+  final Set<String> _expandedEventIds = {};
 
   @override
   void initState() {
     super.initState();
+    _initLocalPath();
     _loadData().then((_) => _syncFromServer());
+  }
+
+  Future<void> _initLocalPath() async {
+    final directory = await getApplicationDocumentsDirectory();
+    setState(() {
+      _localImagesPath = p.join(directory.path, 'milestone_images');
+    });
   }
 
   Future<void> _syncFromServer() async {
@@ -223,45 +234,26 @@ class _MilestoneHomePageState extends State<MilestoneHomePage> {
     MilestoneEvent event,
     List<XFile> imageFiles,
   ) async {
-    // 💡 提示：Android 模拟器使用 10.0.2.2，iOS 模拟器使用 localhost
-    // 如果是真机测试，请确保手机和电脑在同一个 WiFi，并使用电脑的局域网 IP (如 192.168.1.5)
     final String serverUrl = Platform.isAndroid
         ? 'http://8.145.33.28:3000/api/milestones'
         : 'http://8.145.33.28:3000/api/milestones';
 
-    // Save images to local persistent storage as well
-    final List<String> localPaths = [];
-    try {
-      final directory = await getApplicationDocumentsDirectory();
-      final imagesDir = Directory(p.join(directory.path, 'milestone_images'));
-      if (!await imagesDir.exists()) {
-        await imagesDir.create(recursive: true);
-      }
-
-      for (var xFile in imageFiles) {
-        final fileName =
-            '${DateTime.now().millisecondsSinceEpoch}_${p.basename(xFile.path)}';
-        final savedFile = await File(
-          xFile.path,
-        ).copy(p.join(imagesDir.path, fileName));
-        localPaths.add(savedFile.path);
-      }
-    } catch (e) {
-      debugPrint('Error saving images locally: $e');
+    final directory = await getApplicationDocumentsDirectory();
+    final imagesDir = Directory(p.join(directory.path, 'milestone_images'));
+    if (!await imagesDir.exists()) {
+      await imagesDir.create(recursive: true);
     }
 
+    // 1. 先尝试上传到服务器
     try {
       var request = http.MultipartRequest('POST', Uri.parse(serverUrl));
-
-      // Add JSON data
       request.fields['event'] = json.encode(event.toJson());
 
-      // Add multiple images
-      for (var i = 0; i < imageFiles.length; i++) {
+      for (var xFile in imageFiles) {
         var multipartFile = await http.MultipartFile.fromPath(
           'images',
-          imageFiles[i].path,
-          filename: p.basename(imageFiles[i].path),
+          xFile.path,
+          filename: p.basename(xFile.path),
         );
         request.files.add(multipartFile);
       }
@@ -270,16 +262,351 @@ class _MilestoneHomePageState extends State<MilestoneHomePage> {
       if (response.statusCode == 200 || response.statusCode == 201) {
         final respStr = await response.stream.bytesToString();
         final decoded = json.decode(respStr);
-        // Assuming server returns the list of uploaded image URLs
-        return List<String>.from(decoded['imageUrls'] ?? []);
+        final List<String> serverUrls = List<String>.from(
+          decoded['imageUrls'] ?? [],
+        );
+
+        // 2. 上传成功后，将图片以服务器分配的文件名保存在本地，方便后续“秒开”
+        for (var i = 0; i < serverUrls.length; i++) {
+          final url = serverUrls[i];
+          final fileName = p.basename(url);
+          final localPath = p.join(imagesDir.path, fileName);
+          await File(imageFiles[i].path).copy(localPath);
+        }
+        return serverUrls;
       } else {
         debugPrint('Upload failed with status: ${response.statusCode}');
-        return localPaths; // Fallback to local paths on upload failure
       }
     } catch (e) {
       debugPrint('Error uploading to server: $e');
-      return localPaths; // Fallback to local paths on error
     }
+
+    // 3. 如果上传失败，或者为了保险，将原始图片保存在本地并返回本地路径
+    final List<String> localPaths = [];
+    for (var xFile in imageFiles) {
+      final fileName =
+          'local_${DateTime.now().millisecondsSinceEpoch}_${p.basename(xFile.path)}';
+      final savedFile = await File(
+        xFile.path,
+      ).copy(p.join(imagesDir.path, fileName));
+      localPaths.add(savedFile.path);
+    }
+    return localPaths;
+  }
+
+  Future<void> _updateEvent(
+    MilestoneEvent event,
+    List<String> existingUrls,
+    List<XFile> newFiles,
+  ) async {
+    final String baseUrl = Platform.isAndroid
+        ? 'http://8.145.33.28:3000/api/milestones'
+        : 'http://8.145.33.28:3000/api/milestones';
+
+    try {
+      var request = http.MultipartRequest(
+        'PUT',
+        Uri.parse('$baseUrl/${event.id}'),
+      );
+      request.fields['event'] = json.encode(event.toJson());
+      request.fields['existingImages'] = json.encode(existingUrls);
+
+      for (var xFile in newFiles) {
+        var multipartFile = await http.MultipartFile.fromPath(
+          'images',
+          xFile.path,
+          filename: p.basename(xFile.path),
+        );
+        request.files.add(multipartFile);
+      }
+
+      var response = await request.send();
+      if (response.statusCode == 200) {
+        final respStr = await response.stream.bytesToString();
+        final decoded = json.decode(respStr);
+        final updatedEvent = MilestoneEvent.fromJson(decoded['milestone']);
+
+        setState(() {
+          final index = _events.indexWhere((e) => e.id == event.id);
+          if (index != -1) {
+            _events[index] = updatedEvent;
+            _events.sort((a, b) => a.date.compareTo(b.date));
+          }
+        });
+        await _saveData();
+      }
+    } catch (e) {
+      debugPrint('Update failed: $e');
+      // If server update fails, update locally anyway as fallback
+      setState(() {
+        final index = _events.indexWhere((e) => e.id == event.id);
+        if (index != -1) {
+          _events[index] = event;
+          _events.sort((a, b) => a.date.compareTo(b.date));
+        }
+      });
+      await _saveData();
+    }
+  }
+
+  void _openEditEventDialog(MilestoneEvent event) {
+    final titleController = TextEditingController(text: event.title);
+    final descController = TextEditingController(text: event.description);
+    DateTime selectedDate = event.date;
+    MilestoneOwner owner = event.owner;
+    List<String> currentUrls = List.from(event.images);
+    List<XFile> newFiles = [];
+    final ImagePicker picker = ImagePicker();
+
+    showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: '',
+      pageBuilder: (context, anim1, anim2) => const SizedBox.shrink(),
+      transitionDuration: const Duration(milliseconds: 200),
+      transitionBuilder: (context, anim1, anim2, child) {
+        return Transform.scale(
+          scale: anim1.value,
+          child: Opacity(
+            opacity: anim1.value,
+            child: StatefulBuilder(
+              builder: (context, setLocalState) {
+                return AlertDialog(
+                  title: Row(
+                    children: [
+                      const Icon(Icons.edit, size: 20),
+                      const SizedBox(width: 8),
+                      const Text('编辑里程碑'),
+                    ],
+                  ),
+                  content: SizedBox(
+                    width: double.maxFinite,
+                    child: SingleChildScrollView(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          TextField(
+                            controller: titleController,
+                            decoration: const InputDecoration(labelText: '标题'),
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: descController,
+                            decoration: const InputDecoration(labelText: '描述'),
+                            maxLines: 3,
+                          ),
+                          const SizedBox(height: 12),
+                          DropdownButtonFormField<MilestoneOwner>(
+                            value: owner,
+                            items: MilestoneOwner.values
+                                .map(
+                                  (value) => DropdownMenuItem(
+                                    value: value,
+                                    child: Text(
+                                      value.getLabel(
+                                        _personAName,
+                                        _personBName,
+                                      ),
+                                    ),
+                                  ),
+                                )
+                                .toList(),
+                            onChanged: (value) {
+                              if (value == null) return;
+                              setLocalState(() => owner = value);
+                            },
+                            decoration: const InputDecoration(
+                              labelText: '节点类型',
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Text('日期：${_formatDate(selectedDate)}'),
+                              ),
+                              TextButton(
+                                onPressed: () async {
+                                  final picked = await showDatePicker(
+                                    context: context,
+                                    initialDate: selectedDate,
+                                    firstDate: DateTime(2000),
+                                    lastDate: DateTime(2100),
+                                  );
+                                  if (picked != null) {
+                                    setLocalState(() => selectedDate = picked);
+                                  }
+                                },
+                                child: const Text('选择日期'),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          const Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              '当前图片:',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          if (currentUrls.isNotEmpty || newFiles.isNotEmpty)
+                            SizedBox(
+                              height: 80,
+                              child: ListView(
+                                scrollDirection: Axis.horizontal,
+                                children: [
+                                  ...currentUrls.map(
+                                    (url) => Padding(
+                                      padding: const EdgeInsets.only(right: 8),
+                                      child: Stack(
+                                        children: [
+                                          ClipRRect(
+                                            borderRadius: BorderRadius.circular(
+                                              8,
+                                            ),
+                                            child: _SmartImage(
+                                              url: url,
+                                              localImagesPath: _localImagesPath,
+                                            ),
+                                          ),
+                                          Positioned(
+                                            right: 0,
+                                            top: 0,
+                                            child: GestureDetector(
+                                              onTap: () {
+                                                setLocalState(() {
+                                                  currentUrls.remove(url);
+                                                });
+                                              },
+                                              child: Container(
+                                                color: Colors.black54,
+                                                child: const Icon(
+                                                  Icons.close,
+                                                  size: 16,
+                                                  color: Colors.white,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                  ...newFiles.map(
+                                    (file) => Padding(
+                                      padding: const EdgeInsets.only(right: 8),
+                                      child: Stack(
+                                        children: [
+                                          ClipRRect(
+                                            borderRadius: BorderRadius.circular(
+                                              8,
+                                            ),
+                                            child: Image.file(
+                                              File(file.path),
+                                              width: 80,
+                                              height: 80,
+                                              fit: BoxFit.cover,
+                                            ),
+                                          ),
+                                          Positioned(
+                                            right: 0,
+                                            top: 0,
+                                            child: GestureDetector(
+                                              onTap: () {
+                                                setLocalState(() {
+                                                  newFiles.remove(file);
+                                                });
+                                              },
+                                              child: Container(
+                                                color: Colors.black54,
+                                                child: const Icon(
+                                                  Icons.close,
+                                                  size: 16,
+                                                  color: Colors.white,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.add_a_photo),
+                                    onPressed: () async {
+                                      final List<XFile> images = await picker
+                                          .pickMultiImage(imageQuality: 70);
+                                      if (images.isNotEmpty) {
+                                        setLocalState(() {
+                                          newFiles.addAll(images);
+                                        });
+                                      }
+                                    },
+                                  ),
+                                ],
+                              ),
+                            )
+                          else
+                            IconButton(
+                              icon: const Icon(Icons.add_a_photo),
+                              onPressed: () async {
+                                final List<XFile> images = await picker
+                                    .pickMultiImage(imageQuality: 70);
+                                if (images.isNotEmpty) {
+                                  setLocalState(() {
+                                    newFiles.addAll(images);
+                                  });
+                                }
+                              },
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('取消'),
+                    ),
+                    FilledButton(
+                      onPressed: () async {
+                        final title = titleController.text.trim();
+                        if (title.isEmpty) return;
+
+                        showDialog(
+                          context: context,
+                          barrierDismissible: false,
+                          builder: (context) =>
+                              const Center(child: CircularProgressIndicator()),
+                        );
+
+                        final updatedEvent = MilestoneEvent(
+                          id: event.id,
+                          title: title,
+                          description: descController.text.trim(),
+                          date: selectedDate,
+                          owner: owner,
+                          images: currentUrls, // Server will add newFiles
+                        );
+
+                        await _updateEvent(updatedEvent, currentUrls, newFiles);
+
+                        if (mounted) {
+                          Navigator.pop(context); // Pop loading
+                          Navigator.pop(context); // Pop edit dialog
+                        }
+                      },
+                      child: const Text('保存'),
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+        );
+      },
+    );
   }
 
   void _openEditNamesDialog() {
@@ -410,7 +737,9 @@ class _MilestoneHomePageState extends State<MilestoneHomePage> {
                           icon: const Icon(Icons.add_a_photo),
                           onPressed: () async {
                             final List<XFile> images = await picker
-                                .pickMultiImage();
+                                .pickMultiImage(
+                                  imageQuality: 70, // 默认开启压缩，减小服务器压力
+                                );
                             if (images.isNotEmpty) {
                               setLocalState(() {
                                 selectedImages.addAll(images);
@@ -533,8 +862,25 @@ class _MilestoneHomePageState extends State<MilestoneHomePage> {
     final dates = groupedEvents.keys.toList()..sort();
 
     return Scaffold(
+      backgroundColor: Colors.pink.shade50,
       appBar: AppBar(
-        title: const Text('情侣里程碑'),
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        surfaceTintColor: Colors.transparent,
+        backgroundColor: Colors.pink.shade50,
+        title: Row(
+          children: [
+            const Text('情侣里程碑'),
+            const SizedBox(width: 12),
+            _PersonLabel(name: _personAName, color: Colors.blue, compact: true),
+            const SizedBox(width: 6),
+            _PersonLabel(
+              name: _personBName,
+              color: Colors.green,
+              compact: true,
+            ),
+          ],
+        ),
         actions: [
           IconButton(
             tooltip: '缩小',
@@ -577,37 +923,13 @@ class _MilestoneHomePageState extends State<MilestoneHomePage> {
       ),
       body: Column(
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: Row(
-              children: [
-                Expanded(
-                  child: _PersonLabel(
-                    name: _personAName,
-                    alignRight: true,
-                    color: Colors.blue,
-                  ),
-                ),
-                Expanded(
-                  child: _PersonLabel(
-                    name: _personBName,
-                    alignRight: false,
-                    color: Colors.green,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const Divider(height: 1),
           Expanded(
             child: LayoutBuilder(
               builder: (context, constraints) {
                 final availableHeight = constraints.maxHeight;
-                final dateSectionHeight = TimelineColumn.dateRowHeight + 12;
-                final bodyHeight = (availableHeight - dateSectionHeight).clamp(
-                  0.0,
-                  double.infinity,
-                );
+                // Removed fixed date row space as names are now in AppBar
+                final dateSectionHeight = 0.0;
+                final bodyHeight = availableHeight.clamp(0.0, double.infinity);
                 final lineTotal =
                     (TimelineColumn.lineRowHeight * 2) +
                     (TimelineColumn.gapHeight * 2);
@@ -656,6 +978,14 @@ class _MilestoneHomePageState extends State<MilestoneHomePage> {
                     : contentWidth;
 
                 return GestureDetector(
+                  onTap: () {
+                    // Click blank area to collapse all
+                    if (_expandedEventIds.isNotEmpty) {
+                      setState(() {
+                        _expandedEventIds.clear();
+                      });
+                    }
+                  },
                   onScaleStart: (details) {
                     _baseScaleFactor = _scaleFactor;
                   },
@@ -735,6 +1065,20 @@ class _MilestoneHomePageState extends State<MilestoneHomePage> {
                                       middleSlotHeight: middleSlotHeight,
                                       bottomSlotHeight: bottomSlotHeight,
                                       onDelete: _deleteEvent,
+                                      onEdit: _openEditEventDialog,
+                                      expandedEventIds: _expandedEventIds,
+                                      onToggleExpand: (eventId) {
+                                        setState(() {
+                                          if (_expandedEventIds.contains(
+                                            eventId,
+                                          )) {
+                                            _expandedEventIds.remove(eventId);
+                                          } else {
+                                            _expandedEventIds.add(eventId);
+                                          }
+                                        });
+                                      },
+                                      localImagesPath: _localImagesPath,
                                     ),
                                   ),
                                 ),
@@ -757,32 +1101,37 @@ class _MilestoneHomePageState extends State<MilestoneHomePage> {
 class _PersonLabel extends StatelessWidget {
   const _PersonLabel({
     required this.name,
-    required this.alignRight,
     required this.color,
+    this.compact = false,
   });
 
   final String name;
-  final bool alignRight;
   final Color color;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
-    return Align(
-      alignment: alignRight ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        decoration: BoxDecoration(
-          color: color.withOpacity(0.2),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: color.withOpacity(0.5)),
-        ),
-        child: Text(
-          name,
-          style: Theme.of(context).textTheme.labelLarge?.copyWith(
-            color: color.withOpacity(0.8),
-            fontWeight: FontWeight.bold,
-          ),
-        ),
+    return Container(
+      padding: EdgeInsets.symmetric(
+        horizontal: compact ? 8 : 12,
+        vertical: compact ? 2 : 6,
+      ),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.15),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withOpacity(0.3)),
+      ),
+      child: Text(
+        name,
+        style:
+            (compact
+                    ? Theme.of(context).textTheme.labelMedium
+                    : Theme.of(context).textTheme.labelLarge)
+                ?.copyWith(
+                  color: color.withOpacity(0.9),
+                  fontWeight: FontWeight.bold,
+                  fontSize: compact ? 11 : null,
+                ),
       ),
     );
   }
@@ -799,6 +1148,10 @@ class TimelineColumn extends StatelessWidget {
     required this.middleSlotHeight,
     required this.bottomSlotHeight,
     required this.onDelete,
+    required this.onEdit,
+    required this.expandedEventIds,
+    required this.onToggleExpand,
+    this.localImagesPath,
   });
 
   final DateTime date;
@@ -809,6 +1162,10 @@ class TimelineColumn extends StatelessWidget {
   final double middleSlotHeight;
   final double bottomSlotHeight;
   final Function(MilestoneEvent) onDelete;
+  final Function(MilestoneEvent) onEdit;
+  final Set<String> expandedEventIds;
+  final Function(String) onToggleExpand;
+  final String? localImagesPath;
 
   static const double columnWidth = 240;
   static const double lineRowHeight = 24;
@@ -860,8 +1217,6 @@ class TimelineColumn extends StatelessWidget {
       width: columnWidth,
       child: Column(
         children: [
-          // Remove the top fixed date row and replace with empty space to keep layout alignment
-          const SizedBox(height: dateRowHeight + 12),
           SizedBox(
             height: bodyHeight,
             child: Stack(
@@ -907,7 +1262,7 @@ class TimelineColumn extends StatelessWidget {
                     right: 0,
                     child: _DateChip(
                       date: date,
-                      color: aEvents.isNotEmpty ? Colors.blue : Colors.orange,
+                      color: aEvents.isNotEmpty ? Colors.blue : Colors.green,
                     ),
                   ),
                 Column(
@@ -924,6 +1279,10 @@ class TimelineColumn extends StatelessWidget {
                               events: aEvents,
                               label: personAName,
                               onDelete: onDelete,
+                              onEdit: onEdit,
+                              expandedEventIds: expandedEventIds,
+                              onToggleExpand: onToggleExpand,
+                              localImagesPath: localImagesPath,
                             ),
                           ),
                         ),
@@ -942,6 +1301,10 @@ class TimelineColumn extends StatelessWidget {
                               label: '$personAName & $personBName',
                               compact: true,
                               onDelete: onDelete,
+                              onEdit: onEdit,
+                              expandedEventIds: expandedEventIds,
+                              onToggleExpand: onToggleExpand,
+                              localImagesPath: localImagesPath,
                             ),
                           ),
                         ),
@@ -960,6 +1323,10 @@ class TimelineColumn extends StatelessWidget {
                               events: bEvents,
                               label: personBName,
                               onDelete: onDelete,
+                              onEdit: onEdit,
+                              expandedEventIds: expandedEventIds,
+                              onToggleExpand: onToggleExpand,
+                              localImagesPath: localImagesPath,
                             ),
                           ),
                         ),
@@ -1189,13 +1556,21 @@ class _EventStack extends StatelessWidget {
     required this.events,
     required this.label,
     required this.onDelete,
+    required this.onEdit,
+    required this.expandedEventIds,
+    required this.onToggleExpand,
     this.compact = false,
+    this.localImagesPath,
   });
 
   final List<MilestoneEvent> events;
   final String label;
   final bool compact;
   final Function(MilestoneEvent) onDelete;
+  final Function(MilestoneEvent) onEdit;
+  final Set<String> expandedEventIds;
+  final Function(String) onToggleExpand;
+  final String? localImagesPath;
 
   @override
   Widget build(BuildContext context) {
@@ -1211,7 +1586,11 @@ class _EventStack extends StatelessWidget {
             event: events[i],
             label: label,
             compact: compact,
+            isExpanded: expandedEventIds.contains(events[i].id),
+            onToggleExpand: () => onToggleExpand(events[i].id),
             onDelete: () => onDelete(events[i]),
+            onEdit: () => onEdit(events[i]),
+            localImagesPath: localImagesPath,
           ),
           if (i != events.length - 1) const SizedBox(height: 8),
         ],
@@ -1226,53 +1605,46 @@ class EventCard extends StatefulWidget {
     required this.event,
     required this.label,
     required this.onDelete,
+    required this.onEdit,
+    required this.isExpanded,
+    required this.onToggleExpand,
     this.compact = false,
+    this.localImagesPath,
   });
 
   final MilestoneEvent event;
   final String label;
   final bool compact;
   final VoidCallback onDelete;
+  final VoidCallback onEdit;
+  final bool isExpanded;
+  final VoidCallback onToggleExpand;
+  final String? localImagesPath;
 
   @override
   State<EventCard> createState() => _EventCardState();
 }
 
 class _EventCardState extends State<EventCard> {
-  bool _isExpanded = false;
+  bool get _isExpanded => widget.isExpanded;
 
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
 
     final (bgColor, accentColor) = switch (widget.event.owner) {
-      MilestoneOwner.personA => (
-        Colors.blue.shade100.withOpacity(0.9),
-        Colors.blue,
-      ),
-      MilestoneOwner.personB => (
-        Colors.green.shade100.withOpacity(0.9),
-        Colors.green,
-      ),
-      MilestoneOwner.both => (
-        Colors.pink.shade50.withOpacity(0.9),
-        Colors.pinkAccent,
-      ),
+      MilestoneOwner.personA => (Colors.blue.shade200, Colors.blue),
+      MilestoneOwner.personB => (Colors.green.shade200, Colors.green),
+      MilestoneOwner.both => (Colors.pink.shade100, Colors.pinkAccent),
     };
 
     final card = GestureDetector(
-      onTap: () {
-        setState(() {
-          _isExpanded = !_isExpanded;
-        });
-      },
+      onTap: widget.isExpanded ? widget.onEdit : widget.onToggleExpand,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 300),
         curve: Curves.easeInOut,
         decoration: BoxDecoration(
-          color: bgColor.withOpacity(
-            widget.event.owner == MilestoneOwner.both ? 0.6 : 0.85,
-          ),
+          color: bgColor.withOpacity(_isExpanded ? 0.95 : 0.8),
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
             color: accentColor.withOpacity(_isExpanded ? 0.5 : 0.2),
@@ -1287,11 +1659,7 @@ class _EventCardState extends State<EventCard> {
           ],
         ),
         padding: EdgeInsets.all(widget.compact ? 8 : 12),
-        margin: EdgeInsets.symmetric(
-          horizontal: widget.event.owner == MilestoneOwner.both && !_isExpanded
-              ? 48 // Extra margin for shared events to stay between lines
-              : 8,
-        ),
+        margin: EdgeInsets.symmetric(horizontal: _isExpanded ? 8 : 32),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
@@ -1312,6 +1680,15 @@ class _EventCardState extends State<EventCard> {
                   _isExpanded ? Icons.expand_less : Icons.expand_more,
                   size: 12,
                   color: accentColor.withOpacity(0.5),
+                ),
+                const SizedBox(width: 4),
+                GestureDetector(
+                  onTap: widget.onEdit,
+                  child: Icon(
+                    Icons.edit_outlined,
+                    size: 14,
+                    color: accentColor.withOpacity(0.6),
+                  ),
                 ),
                 const SizedBox(width: 4),
                 GestureDetector(
@@ -1347,33 +1724,12 @@ class _EventCardState extends State<EventCard> {
                     scrollDirection: Axis.horizontal,
                     itemBuilder: (context, index) {
                       final url = widget.event.images[index];
-                      Widget image;
-                      if (url.startsWith('assets/')) {
-                        image = Image.asset(
-                          url,
-                          width: 80,
-                          height: 80,
-                          fit: BoxFit.cover,
-                        );
-                      } else if (url.startsWith('http')) {
-                        image = Image.network(
-                          url,
-                          width: 80,
-                          height: 80,
-                          fit: BoxFit.cover,
-                        );
-                      } else {
-                        image = Image.file(
-                          File(url),
-                          width: 80,
-                          height: 80,
-                          fit: BoxFit.cover,
-                        );
-                      }
-
                       return ClipRRect(
                         borderRadius: BorderRadius.circular(8),
-                        child: image,
+                        child: _SmartImage(
+                          url: url,
+                          localImagesPath: widget.localImagesPath,
+                        ),
                       );
                     },
                     separatorBuilder: (_, _) => const SizedBox(width: 8),
@@ -1397,19 +1753,132 @@ class _EventCardState extends State<EventCard> {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (widget.event.owner == MilestoneOwner.personB)
+        if (widget.event.owner == MilestoneOwner.personB && !_isExpanded)
           CustomPaint(
             size: const Size(12, 6),
             painter: _BubbleTailPainter(color: bgColor, pointingDown: false),
           ),
         card,
-        if (widget.event.owner == MilestoneOwner.personA)
+        if (widget.event.owner == MilestoneOwner.personA && !_isExpanded)
           CustomPaint(
             size: const Size(12, 6),
             painter: _BubbleTailPainter(color: bgColor, pointingDown: true),
           ),
       ],
     );
+  }
+}
+
+class _SmartImage extends StatefulWidget {
+  const _SmartImage({required this.url, required this.localImagesPath});
+
+  final String url;
+  final String? localImagesPath;
+
+  @override
+  State<_SmartImage> createState() => _SmartImageState();
+}
+
+class _SmartImageState extends State<_SmartImage> {
+  bool _isLocal = false;
+  File? _localFile;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkLocalStatus();
+  }
+
+  @override
+  void didUpdateWidget(_SmartImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.url != widget.url) {
+      _checkLocalStatus();
+    }
+  }
+
+  Future<void> _checkLocalStatus() async {
+    if (widget.url.startsWith('http') && widget.localImagesPath != null) {
+      final fileName = p.basename(widget.url);
+      final file = File(p.join(widget.localImagesPath!, fileName));
+      if (file.existsSync()) {
+        setState(() {
+          _isLocal = true;
+          _localFile = file;
+        });
+      } else {
+        // 如果本地没有，则触发后台下载并保存
+        _downloadAndSave(file);
+      }
+    }
+  }
+
+  Future<void> _downloadAndSave(File targetFile) async {
+    try {
+      final response = await http.get(Uri.parse(widget.url));
+      if (response.statusCode == 200) {
+        // 确保目录存在
+        if (!targetFile.parent.existsSync()) {
+          await targetFile.parent.create(recursive: true);
+        }
+        await targetFile.writeAsBytes(response.bodyBytes);
+        if (mounted) {
+          setState(() {
+            _isLocal = true;
+            _localFile = targetFile;
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('自动下载图片失败: $e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // 1. 如果是 assets 路径
+    if (widget.url.startsWith('assets/')) {
+      return Image.asset(widget.url, width: 80, height: 80, fit: BoxFit.cover);
+    }
+
+    // 2. 如果已经确认本地存在（或者是刚下载好的）
+    if (_isLocal && _localFile != null) {
+      return Image.file(_localFile!, width: 80, height: 80, fit: BoxFit.cover);
+    }
+
+    // 3. 如果是网络路径且本地暂无，则先用 Image.network 展示（同时后台在下载）
+    if (widget.url.startsWith('http')) {
+      return Image.network(
+        widget.url,
+        width: 80,
+        height: 80,
+        fit: BoxFit.cover,
+        errorBuilder: (context, error, stackTrace) =>
+            const Icon(Icons.broken_image),
+        loadingBuilder: (context, child, loadingProgress) {
+          if (loadingProgress == null) return child;
+          return const SizedBox(
+            width: 80,
+            height: 80,
+            child: Center(
+              child: SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+          );
+        },
+      );
+    }
+
+    // 4. 如果是本地绝对路径
+    final file = File(widget.url);
+    if (file.existsSync()) {
+      return Image.file(file, width: 80, height: 80, fit: BoxFit.cover);
+    }
+
+    return const Icon(Icons.image_not_supported);
   }
 }
 
