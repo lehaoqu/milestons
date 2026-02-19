@@ -1046,42 +1046,90 @@ class _MilestoneHomePageState extends State<MilestoneHomePage> {
                                   ),
                                 ),
                               ),
+                              // Columns without expanded events first (background)
                               for (var i = 0; i < dates.length; i++)
-                                Positioned(
-                                  left: totalDays == 0
-                                      ? 0
-                                      : dates[i].difference(startDate).inDays *
-                                            pixelsPerDay,
-                                  top: 0,
-                                  child: SizedBox(
-                                    width: TimelineColumn.columnWidth,
-                                    height: constraints.maxHeight,
-                                    child: TimelineColumn(
-                                      date: dates[i],
-                                      events: groupedEvents[dates[i]] ?? [],
-                                      personAName: _personAName,
-                                      personBName: _personBName,
-                                      topSlotHeight: topSlotHeight,
-                                      middleSlotHeight: middleSlotHeight,
-                                      bottomSlotHeight: bottomSlotHeight,
-                                      onDelete: _deleteEvent,
-                                      onEdit: _openEditEventDialog,
-                                      expandedEventIds: _expandedEventIds,
-                                      onToggleExpand: (eventId) {
-                                        setState(() {
-                                          if (_expandedEventIds.contains(
-                                            eventId,
-                                          )) {
-                                            _expandedEventIds.remove(eventId);
-                                          } else {
-                                            _expandedEventIds.add(eventId);
-                                          }
-                                        });
-                                      },
-                                      localImagesPath: _localImagesPath,
+                                if (!(groupedEvents[dates[i]] ?? []).any(
+                                  (e) => _expandedEventIds.contains(e.id),
+                                ))
+                                  Positioned(
+                                    left: totalDays == 0
+                                        ? 0
+                                        : dates[i]
+                                                  .difference(startDate)
+                                                  .inDays *
+                                              pixelsPerDay,
+                                    top: 0,
+                                    child: SizedBox(
+                                      width: TimelineColumn.columnWidth,
+                                      height: constraints.maxHeight,
+                                      child: TimelineColumn(
+                                        date: dates[i],
+                                        events: groupedEvents[dates[i]] ?? [],
+                                        personAName: _personAName,
+                                        personBName: _personBName,
+                                        topSlotHeight: topSlotHeight,
+                                        middleSlotHeight: middleSlotHeight,
+                                        bottomSlotHeight: bottomSlotHeight,
+                                        onDelete: _deleteEvent,
+                                        onEdit: _openEditEventDialog,
+                                        expandedEventIds: _expandedEventIds,
+                                        onToggleExpand: (eventId) {
+                                          setState(() {
+                                            if (_expandedEventIds.contains(
+                                              eventId,
+                                            )) {
+                                              _expandedEventIds.remove(eventId);
+                                            } else {
+                                              _expandedEventIds.add(eventId);
+                                            }
+                                          });
+                                        },
+                                        localImagesPath: _localImagesPath,
+                                      ),
                                     ),
                                   ),
-                                ),
+                              // Columns WITH expanded events last (foreground / on top)
+                              for (var i = 0; i < dates.length; i++)
+                                if ((groupedEvents[dates[i]] ?? []).any(
+                                  (e) => _expandedEventIds.contains(e.id),
+                                ))
+                                  Positioned(
+                                    left: totalDays == 0
+                                        ? 0
+                                        : dates[i]
+                                                  .difference(startDate)
+                                                  .inDays *
+                                              pixelsPerDay,
+                                    top: 0,
+                                    child: SizedBox(
+                                      width: TimelineColumn.columnWidth,
+                                      height: constraints.maxHeight,
+                                      child: TimelineColumn(
+                                        date: dates[i],
+                                        events: groupedEvents[dates[i]] ?? [],
+                                        personAName: _personAName,
+                                        personBName: _personBName,
+                                        topSlotHeight: topSlotHeight,
+                                        middleSlotHeight: middleSlotHeight,
+                                        bottomSlotHeight: bottomSlotHeight,
+                                        onDelete: _deleteEvent,
+                                        onEdit: _openEditEventDialog,
+                                        expandedEventIds: _expandedEventIds,
+                                        onToggleExpand: (eventId) {
+                                          setState(() {
+                                            if (_expandedEventIds.contains(
+                                              eventId,
+                                            )) {
+                                              _expandedEventIds.remove(eventId);
+                                            } else {
+                                              _expandedEventIds.add(eventId);
+                                            }
+                                          });
+                                        },
+                                        localImagesPath: _localImagesPath,
+                                      ),
+                                    ),
+                                  ),
                             ],
                           ),
                         ),
@@ -1640,105 +1688,109 @@ class _EventCardState extends State<EventCard> {
 
     final card = GestureDetector(
       onTap: widget.isExpanded ? widget.onEdit : widget.onToggleExpand,
-      child: AnimatedContainer(
+      child: AnimatedOpacity(
         duration: const Duration(milliseconds: 300),
-        curve: Curves.easeInOut,
-        decoration: BoxDecoration(
-          color: bgColor.withOpacity(_isExpanded ? 0.95 : 0.8),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(
-            color: accentColor.withOpacity(_isExpanded ? 0.5 : 0.2),
-            width: _isExpanded ? 2 : 1,
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.05),
-              blurRadius: 4,
-              offset: const Offset(0, 2),
+        opacity: _isExpanded ? 1.0 : 0.9,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeInOut,
+          decoration: BoxDecoration(
+            color: bgColor.withOpacity(_isExpanded ? 1.0 : 0.9),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: accentColor.withOpacity(_isExpanded ? 0.9 : 0.2),
+              width: _isExpanded ? 2 : 1,
             ),
-          ],
-        ),
-        padding: EdgeInsets.all(widget.compact ? 8 : 12),
-        margin: EdgeInsets.symmetric(horizontal: _isExpanded ? 8 : 32),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    widget.label,
-                    style: textTheme.labelSmall?.copyWith(
-                      color: accentColor.withOpacity(0.8),
-                      fontWeight: FontWeight.bold,
-                      fontSize: 10,
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.05),
+                blurRadius: 4,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          padding: EdgeInsets.all(widget.compact ? 8 : 12),
+          margin: EdgeInsets.symmetric(horizontal: _isExpanded ? 8 : 32),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      widget.label,
+                      style: textTheme.labelSmall?.copyWith(
+                        color: accentColor.withOpacity(0.8),
+                        fontWeight: FontWeight.bold,
+                        fontSize: 10,
+                      ),
                     ),
                   ),
-                ),
-                Icon(
-                  _isExpanded ? Icons.expand_less : Icons.expand_more,
-                  size: 12,
-                  color: accentColor.withOpacity(0.5),
-                ),
-                const SizedBox(width: 4),
-                GestureDetector(
-                  onTap: widget.onEdit,
-                  child: Icon(
-                    Icons.edit_outlined,
-                    size: 14,
-                    color: accentColor.withOpacity(0.6),
+                  Icon(
+                    _isExpanded ? Icons.expand_less : Icons.expand_more,
+                    size: 12,
+                    color: accentColor.withOpacity(0.9),
                   ),
-                ),
-                const SizedBox(width: 4),
-                GestureDetector(
-                  onTap: widget.onDelete,
-                  child: Icon(
-                    Icons.delete_outline,
-                    size: 14,
-                    color: Colors.red.withOpacity(0.6),
+                  const SizedBox(width: 4),
+                  GestureDetector(
+                    onTap: widget.onEdit,
+                    child: Icon(
+                      Icons.edit_outlined,
+                      size: 14,
+                      color: accentColor.withOpacity(0.6),
+                    ),
                   ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 1),
-            Text(
-              widget.event.title,
-              style: textTheme.titleSmall?.copyWith(
-                fontWeight: FontWeight.bold,
-                fontSize: 13,
+                  const SizedBox(width: 4),
+                  GestureDetector(
+                    onTap: widget.onDelete,
+                    child: Icon(
+                      Icons.delete_outline,
+                      size: 14,
+                      color: Colors.red.withOpacity(0.6),
+                    ),
+                  ),
+                ],
               ),
-              maxLines: _isExpanded ? 3 : 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            if (_isExpanded) ...[
-              if (widget.event.description.isNotEmpty) ...[
-                const SizedBox(height: 6),
-                Text(widget.event.description, style: textTheme.bodySmall),
-              ],
-              if (widget.event.images.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                SizedBox(
-                  height: 80,
-                  child: ListView.separated(
-                    scrollDirection: Axis.horizontal,
-                    itemBuilder: (context, index) {
-                      final url = widget.event.images[index];
-                      return ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
-                        child: _SmartImage(
-                          url: url,
-                          localImagesPath: widget.localImagesPath,
-                        ),
-                      );
-                    },
-                    separatorBuilder: (_, _) => const SizedBox(width: 8),
-                    itemCount: widget.event.images.length,
-                  ),
+              const SizedBox(height: 1),
+              Text(
+                widget.event.title,
+                style: textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
                 ),
+                maxLines: _isExpanded ? 3 : 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              if (_isExpanded) ...[
+                if (widget.event.description.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(widget.event.description, style: textTheme.bodySmall),
+                ],
+                if (widget.event.images.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    height: 80,
+                    child: ListView.separated(
+                      scrollDirection: Axis.horizontal,
+                      itemBuilder: (context, index) {
+                        final url = widget.event.images[index];
+                        return ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: _SmartImage(
+                            url: url,
+                            localImagesPath: widget.localImagesPath,
+                          ),
+                        );
+                      },
+                      separatorBuilder: (_, _) => const SizedBox(width: 8),
+                      itemCount: widget.event.images.length,
+                    ),
+                  ),
+                ],
               ],
             ],
-          ],
+          ),
         ),
       ),
     );
