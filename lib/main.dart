@@ -99,6 +99,16 @@ class _MilestoneHomePageState extends State<MilestoneHomePage> {
   String? _localImagesPath;
   // Track expanded cards at the top level to allow global collapse
   final Set<String> _expandedEventIds = {};
+  final ScrollController _horizontalScrollController = ScrollController();
+  // Layout info for fit-all button
+  double _viewportWidth = 0;
+  double _contentWidthAtScale1 = 0;
+
+  @override
+  void dispose() {
+    _horizontalScrollController.dispose();
+    super.dispose();
+  }
 
   @override
   void initState() {
@@ -883,264 +893,401 @@ class _MilestoneHomePageState extends State<MilestoneHomePage> {
         ),
         actions: [
           IconButton(
-            tooltip: '缩小',
-            onPressed: () {
-              setState(() {
-                _scaleFactor = (_scaleFactor / 1.2).clamp(0.01, 5.0);
-              });
-            },
-            icon: const Icon(Icons.zoom_out),
-          ),
-          IconButton(
-            tooltip: '放大',
-            onPressed: () {
-              setState(() {
-                _scaleFactor = (_scaleFactor * 1.2).clamp(0.01, 5.0);
-              });
-            },
-            icon: const Icon(Icons.zoom_in),
-          ),
-          IconButton(
-            tooltip: '重置缩放',
-            onPressed: () {
-              setState(() {
-                _scaleFactor = 1.0;
-              });
-            },
-            icon: const Icon(Icons.restore),
-          ),
-          IconButton(
             tooltip: '修改称呼',
             onPressed: _openEditNamesDialog,
             icon: const Icon(Icons.edit),
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _openAddEventDialog,
-        icon: const Icon(Icons.add),
-        label: const Text('添加里程碑'),
-      ),
-      body: Column(
+      body: Stack(
         children: [
-          Expanded(
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final availableHeight = constraints.maxHeight;
-                // Removed fixed date row space as names are now in AppBar
-                final dateSectionHeight = 0.0;
-                final bodyHeight = availableHeight.clamp(0.0, double.infinity);
-                final lineTotal =
-                    (TimelineColumn.lineRowHeight * 2) +
-                    (TimelineColumn.gapHeight * 2);
-                final slotsArea = (bodyHeight - lineTotal).clamp(
-                  0.0,
-                  double.infinity,
-                );
-                final topSlotHeight = slotsArea * 0.3;
-                final middleSlotHeight = slotsArea * 0.4;
-                final bottomSlotHeight = slotsArea * 0.3;
+          Column(
+            children: [
+              Expanded(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final availableHeight = constraints.maxHeight;
+                    // Removed fixed date row space as names are now in AppBar
+                    final dateSectionHeight = 0.0;
+                    final bodyHeight = availableHeight.clamp(
+                      0.0,
+                      double.infinity,
+                    );
+                    final lineTotal =
+                        (TimelineColumn.lineRowHeight * 2) +
+                        (TimelineColumn.gapHeight * 2);
+                    final slotsArea = (bodyHeight - lineTotal).clamp(
+                      0.0,
+                      double.infinity,
+                    );
+                    final topSlotHeight = slotsArea * 0.3;
+                    final middleSlotHeight = slotsArea * 0.4;
+                    final bottomSlotHeight = slotsArea * 0.3;
 
-                final startDate = dates.isEmpty ? DateTime.now() : dates.first;
-                final endDate = dates.isEmpty ? startDate : dates.last;
-                final totalDays = endDate.difference(startDate).inDays;
+                    final startDate = dates.isEmpty
+                        ? DateTime.now()
+                        : dates.first;
+                    final endDate = dates.isEmpty ? startDate : dates.last;
+                    final totalDays = endDate.difference(startDate).inDays;
 
-                int minGapDays = 1;
-                if (dates.length > 1) {
-                  minGapDays = dates
-                      .asMap()
-                      .entries
-                      .skip(1)
-                      .map(
-                        (entry) =>
-                            entry.value.difference(dates[entry.key - 1]).inDays,
-                      )
-                      .where((days) => days > 0)
-                      .fold<int>(
-                        999999,
-                        (min, days) => days < min ? days : min,
-                      );
-                  if (minGapDays == 999999) {
-                    minGapDays = 1;
-                  }
-                }
-
-                final minSpacing = TimelineColumn.columnWidth + 16;
-                final pixelsPerDay =
-                    (totalDays == 0 ? 0.0 : minSpacing / minGapDays) *
-                    _scaleFactor;
-
-                final contentWidth = totalDays == 0
-                    ? TimelineColumn.columnWidth
-                    : (totalDays * pixelsPerDay) + TimelineColumn.columnWidth;
-                final minWidth = contentWidth < constraints.maxWidth
-                    ? constraints.maxWidth
-                    : contentWidth;
-
-                return GestureDetector(
-                  onTap: () {
-                    // Click blank area to collapse all
-                    if (_expandedEventIds.isNotEmpty) {
-                      setState(() {
-                        _expandedEventIds.clear();
-                      });
-                    }
-                  },
-                  onScaleStart: (details) {
-                    _baseScaleFactor = _scaleFactor;
-                  },
-                  onScaleUpdate: (details) {
-                    setState(() {
-                      _scaleFactor =
-                          (_baseScaleFactor * details.horizontalScale).clamp(
-                            0.01,
-                            5.0,
+                    int minGapDays = 1;
+                    if (dates.length > 1) {
+                      minGapDays = dates
+                          .asMap()
+                          .entries
+                          .skip(1)
+                          .map(
+                            (entry) => entry.value
+                                .difference(dates[entry.key - 1])
+                                .inDays,
+                          )
+                          .where((days) => days > 0)
+                          .fold<int>(
+                            999999,
+                            (min, days) => days < min ? days : min,
                           );
-                    });
-                  },
-                  child: Scrollbar(
-                    thumbVisibility: true,
-                    child: SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      physics: const BouncingScrollPhysics(),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 8,
-                      ),
-                      child: ConstrainedBox(
-                        constraints: BoxConstraints(minWidth: minWidth),
-                        child: SizedBox(
-                          width: minWidth,
-                          height: constraints.maxHeight,
-                          child: Stack(
-                            clipBehavior: Clip.none,
-                            children: [
-                              Positioned.fill(
-                                child: CustomPaint(
-                                  painter: _TimelineBackgroundPainter(
-                                    topColor: Colors.blue,
-                                    bottomColor: Colors.green,
-                                    topLineY:
-                                        dateSectionHeight +
-                                        topSlotHeight +
-                                        (TimelineColumn.lineRowHeight / 2),
-                                    bottomLineY:
-                                        dateSectionHeight +
-                                        topSlotHeight +
-                                        TimelineColumn.lineRowHeight +
-                                        TimelineColumn.gapHeight +
-                                        middleSlotHeight +
-                                        TimelineColumn.gapHeight +
-                                        (TimelineColumn.lineRowHeight / 2),
-                                    middleY:
-                                        dateSectionHeight +
-                                        topSlotHeight +
-                                        TimelineColumn.lineRowHeight +
-                                        TimelineColumn.gapHeight +
-                                        (middleSlotHeight / 2),
-                                    dates: dates,
-                                    groupedEvents: groupedEvents,
-                                    startDate: startDate,
-                                    pixelsPerDay: pixelsPerDay,
-                                    columnWidth: TimelineColumn.columnWidth,
+                      if (minGapDays == 999999) {
+                        minGapDays = 1;
+                      }
+                    }
+
+                    final minSpacing = TimelineColumn.columnWidth + 16;
+                    final pixelsPerDay =
+                        (totalDays == 0 ? 0.0 : minSpacing / minGapDays) *
+                        _scaleFactor;
+
+                    final contentWidth = totalDays == 0
+                        ? TimelineColumn.columnWidth
+                        : (totalDays * pixelsPerDay) +
+                              TimelineColumn.columnWidth;
+                    final minWidth = contentWidth < constraints.maxWidth
+                        ? constraints.maxWidth
+                        : contentWidth;
+
+                    // Store for fit-all button
+                    _viewportWidth = constraints.maxWidth;
+                    _contentWidthAtScale1 = totalDays == 0
+                        ? TimelineColumn.columnWidth
+                        : (totalDays * (minSpacing / minGapDays)) +
+                              TimelineColumn.columnWidth;
+
+                    return GestureDetector(
+                      onTap: () {
+                        // Click blank area to collapse all
+                        if (_expandedEventIds.isNotEmpty) {
+                          setState(() {
+                            _expandedEventIds.clear();
+                          });
+                        }
+                      },
+                      onScaleStart: (details) {
+                        _baseScaleFactor = _scaleFactor;
+                      },
+                      onScaleUpdate: (details) {
+                        setState(() {
+                          _scaleFactor =
+                              (_baseScaleFactor * details.horizontalScale)
+                                  .clamp(0.01, 5.0);
+                        });
+                      },
+                      child: Scrollbar(
+                        thumbVisibility: true,
+                        controller: _horizontalScrollController,
+                        child: SingleChildScrollView(
+                          controller: _horizontalScrollController,
+                          scrollDirection: Axis.horizontal,
+                          physics: const BouncingScrollPhysics(),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 8,
+                          ),
+                          child: ConstrainedBox(
+                            constraints: BoxConstraints(minWidth: minWidth),
+                            child: SizedBox(
+                              width: minWidth,
+                              height: constraints.maxHeight,
+                              child: Stack(
+                                clipBehavior: Clip.none,
+                                children: [
+                                  Positioned.fill(
+                                    child: CustomPaint(
+                                      painter: _TimelineBackgroundPainter(
+                                        topColor: Colors.blue,
+                                        bottomColor: Colors.green,
+                                        topLineY:
+                                            dateSectionHeight +
+                                            topSlotHeight +
+                                            (TimelineColumn.lineRowHeight / 2),
+                                        bottomLineY:
+                                            dateSectionHeight +
+                                            topSlotHeight +
+                                            TimelineColumn.lineRowHeight +
+                                            TimelineColumn.gapHeight +
+                                            middleSlotHeight +
+                                            TimelineColumn.gapHeight +
+                                            (TimelineColumn.lineRowHeight / 2),
+                                        middleY:
+                                            dateSectionHeight +
+                                            topSlotHeight +
+                                            TimelineColumn.lineRowHeight +
+                                            TimelineColumn.gapHeight +
+                                            (middleSlotHeight / 2),
+                                        dates: dates,
+                                        groupedEvents: groupedEvents,
+                                        startDate: startDate,
+                                        pixelsPerDay: pixelsPerDay,
+                                        columnWidth: TimelineColumn.columnWidth,
+                                      ),
+                                    ),
                                   ),
-                                ),
+                                  // Columns without expanded events first (background)
+                                  for (var i = 0; i < dates.length; i++)
+                                    if (!(groupedEvents[dates[i]] ?? []).any(
+                                      (e) => _expandedEventIds.contains(e.id),
+                                    ))
+                                      Positioned(
+                                        left: totalDays == 0
+                                            ? 0
+                                            : dates[i]
+                                                      .difference(startDate)
+                                                      .inDays *
+                                                  pixelsPerDay,
+                                        top: 0,
+                                        child: SizedBox(
+                                          width: TimelineColumn.columnWidth,
+                                          height: constraints.maxHeight,
+                                          child: TimelineColumn(
+                                            date: dates[i],
+                                            events:
+                                                groupedEvents[dates[i]] ?? [],
+                                            personAName: _personAName,
+                                            personBName: _personBName,
+                                            topSlotHeight: topSlotHeight,
+                                            middleSlotHeight: middleSlotHeight,
+                                            bottomSlotHeight: bottomSlotHeight,
+                                            onDelete: _deleteEvent,
+                                            onEdit: _openEditEventDialog,
+                                            expandedEventIds: _expandedEventIds,
+                                            onToggleExpand: (eventId) {
+                                              setState(() {
+                                                if (_expandedEventIds.contains(
+                                                  eventId,
+                                                )) {
+                                                  _expandedEventIds.remove(
+                                                    eventId,
+                                                  );
+                                                } else {
+                                                  _expandedEventIds.add(
+                                                    eventId,
+                                                  );
+                                                }
+                                              });
+                                            },
+                                            localImagesPath: _localImagesPath,
+                                          ),
+                                        ),
+                                      ),
+                                  // Columns WITH expanded events last (foreground / on top)
+                                  for (var i = 0; i < dates.length; i++)
+                                    if ((groupedEvents[dates[i]] ?? []).any(
+                                      (e) => _expandedEventIds.contains(e.id),
+                                    ))
+                                      Positioned(
+                                        left: totalDays == 0
+                                            ? 0
+                                            : dates[i]
+                                                      .difference(startDate)
+                                                      .inDays *
+                                                  pixelsPerDay,
+                                        top: 0,
+                                        child: SizedBox(
+                                          width: TimelineColumn.columnWidth,
+                                          height: constraints.maxHeight,
+                                          child: TimelineColumn(
+                                            date: dates[i],
+                                            events:
+                                                groupedEvents[dates[i]] ?? [],
+                                            personAName: _personAName,
+                                            personBName: _personBName,
+                                            topSlotHeight: topSlotHeight,
+                                            middleSlotHeight: middleSlotHeight,
+                                            bottomSlotHeight: bottomSlotHeight,
+                                            onDelete: _deleteEvent,
+                                            onEdit: _openEditEventDialog,
+                                            expandedEventIds: _expandedEventIds,
+                                            onToggleExpand: (eventId) {
+                                              setState(() {
+                                                if (_expandedEventIds.contains(
+                                                  eventId,
+                                                )) {
+                                                  _expandedEventIds.remove(
+                                                    eventId,
+                                                  );
+                                                } else {
+                                                  _expandedEventIds.add(
+                                                    eventId,
+                                                  );
+                                                }
+                                              });
+                                            },
+                                            localImagesPath: _localImagesPath,
+                                          ),
+                                        ),
+                                      ),
+                                ],
                               ),
-                              // Columns without expanded events first (background)
-                              for (var i = 0; i < dates.length; i++)
-                                if (!(groupedEvents[dates[i]] ?? []).any(
-                                  (e) => _expandedEventIds.contains(e.id),
-                                ))
-                                  Positioned(
-                                    left: totalDays == 0
-                                        ? 0
-                                        : dates[i]
-                                                  .difference(startDate)
-                                                  .inDays *
-                                              pixelsPerDay,
-                                    top: 0,
-                                    child: SizedBox(
-                                      width: TimelineColumn.columnWidth,
-                                      height: constraints.maxHeight,
-                                      child: TimelineColumn(
-                                        date: dates[i],
-                                        events: groupedEvents[dates[i]] ?? [],
-                                        personAName: _personAName,
-                                        personBName: _personBName,
-                                        topSlotHeight: topSlotHeight,
-                                        middleSlotHeight: middleSlotHeight,
-                                        bottomSlotHeight: bottomSlotHeight,
-                                        onDelete: _deleteEvent,
-                                        onEdit: _openEditEventDialog,
-                                        expandedEventIds: _expandedEventIds,
-                                        onToggleExpand: (eventId) {
-                                          setState(() {
-                                            if (_expandedEventIds.contains(
-                                              eventId,
-                                            )) {
-                                              _expandedEventIds.remove(eventId);
-                                            } else {
-                                              _expandedEventIds.add(eventId);
-                                            }
-                                          });
-                                        },
-                                        localImagesPath: _localImagesPath,
-                                      ),
-                                    ),
-                                  ),
-                              // Columns WITH expanded events last (foreground / on top)
-                              for (var i = 0; i < dates.length; i++)
-                                if ((groupedEvents[dates[i]] ?? []).any(
-                                  (e) => _expandedEventIds.contains(e.id),
-                                ))
-                                  Positioned(
-                                    left: totalDays == 0
-                                        ? 0
-                                        : dates[i]
-                                                  .difference(startDate)
-                                                  .inDays *
-                                              pixelsPerDay,
-                                    top: 0,
-                                    child: SizedBox(
-                                      width: TimelineColumn.columnWidth,
-                                      height: constraints.maxHeight,
-                                      child: TimelineColumn(
-                                        date: dates[i],
-                                        events: groupedEvents[dates[i]] ?? [],
-                                        personAName: _personAName,
-                                        personBName: _personBName,
-                                        topSlotHeight: topSlotHeight,
-                                        middleSlotHeight: middleSlotHeight,
-                                        bottomSlotHeight: bottomSlotHeight,
-                                        onDelete: _deleteEvent,
-                                        onEdit: _openEditEventDialog,
-                                        expandedEventIds: _expandedEventIds,
-                                        onToggleExpand: (eventId) {
-                                          setState(() {
-                                            if (_expandedEventIds.contains(
-                                              eventId,
-                                            )) {
-                                              _expandedEventIds.remove(eventId);
-                                            } else {
-                                              _expandedEventIds.add(eventId);
-                                            }
-                                          });
-                                        },
-                                        localImagesPath: _localImagesPath,
-                                      ),
-                                    ),
-                                  ),
-                            ],
+                            ),
                           ),
                         ),
                       ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+          // Floating bottom control bar
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 24,
+            child: Center(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.55),
+                  borderRadius: BorderRadius.circular(32),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _ControlButton(
+                      icon: Icons.keyboard_double_arrow_left,
+                      onTap: () {
+                        _horizontalScrollController.animateTo(
+                          0,
+                          duration: const Duration(milliseconds: 300),
+                          curve: Curves.easeOut,
+                        );
+                      },
+                      tooltip: '回到最左',
                     ),
-                  ),
-                );
-              },
+                    const SizedBox(width: 8),
+                    _ControlButton(
+                      icon: Icons.keyboard_double_arrow_right,
+                      onTap: () {
+                        _horizontalScrollController.animateTo(
+                          _horizontalScrollController.position.maxScrollExtent,
+                          duration: const Duration(milliseconds: 300),
+                          curve: Curves.easeOut,
+                        );
+                      },
+                      tooltip: '回到最右',
+                    ),
+                    const SizedBox(width: 8),
+                    _ControlButton(
+                      icon: Icons.add,
+                      onTap: () {
+                        setState(() {
+                          _scaleFactor = (_scaleFactor * 1.3).clamp(0.01, 5.0);
+                        });
+                      },
+                      tooltip: '放大',
+                    ),
+                    const SizedBox(width: 8),
+                    _ControlButton(
+                      icon: Icons.remove,
+                      onTap: () {
+                        setState(() {
+                          _scaleFactor = (_scaleFactor / 1.3).clamp(0.01, 5.0);
+                        });
+                      },
+                      tooltip: '缩小',
+                    ),
+                    const SizedBox(width: 8),
+                    _ControlButton(
+                      icon: Icons.chevron_left,
+                      onTap: () {
+                        final offset = _horizontalScrollController.offset - 200;
+                        _horizontalScrollController.animateTo(
+                          offset.clamp(
+                            0,
+                            _horizontalScrollController
+                                .position
+                                .maxScrollExtent,
+                          ),
+                          duration: const Duration(milliseconds: 200),
+                          curve: Curves.easeOut,
+                        );
+                      },
+                      tooltip: '左移',
+                    ),
+                    const SizedBox(width: 8),
+                    _ControlButton(
+                      icon: Icons.chevron_right,
+                      onTap: () {
+                        final offset = _horizontalScrollController.offset + 200;
+                        _horizontalScrollController.animateTo(
+                          offset.clamp(
+                            0,
+                            _horizontalScrollController
+                                .position
+                                .maxScrollExtent,
+                          ),
+                          duration: const Duration(milliseconds: 200),
+                          curve: Curves.easeOut,
+                        );
+                      },
+                      tooltip: '右移',
+                    ),
+                    const SizedBox(width: 8),
+                    _ControlButton(
+                      icon: Icons.add_circle_outline,
+                      onTap: _openAddEventDialog,
+                      tooltip: '添加里程碑',
+                      highlighted: true,
+                    ),
+                  ],
+                ),
+              ),
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _ControlButton extends StatelessWidget {
+  const _ControlButton({
+    required this.icon,
+    required this.onTap,
+    required this.tooltip,
+    this.highlighted = false,
+  });
+
+  final IconData icon;
+  final VoidCallback onTap;
+  final String tooltip;
+  final bool highlighted;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            color: highlighted
+                ? Colors.pinkAccent.withOpacity(0.7)
+                : Colors.white.withOpacity(0.2),
+            shape: BoxShape.circle,
+          ),
+          child: Icon(icon, color: Colors.white, size: 22),
+        ),
       ),
     );
   }
