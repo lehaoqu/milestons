@@ -90,7 +90,8 @@ class MilestoneHomePage extends StatefulWidget {
   State<MilestoneHomePage> createState() => _MilestoneHomePageState();
 }
 
-class _MilestoneHomePageState extends State<MilestoneHomePage> {
+class _MilestoneHomePageState extends State<MilestoneHomePage>
+    with SingleTickerProviderStateMixin {
   String _personAName = '皓';
   String _personBName = '晴';
   double _scaleFactor = 1.0;
@@ -100,13 +101,20 @@ class _MilestoneHomePageState extends State<MilestoneHomePage> {
   // Track expanded cards at the top level to allow global collapse
   final Set<String> _expandedEventIds = {};
   final ScrollController _horizontalScrollController = ScrollController();
-  // Layout info for fit-all button
+  // Layout info
   double _viewportWidth = 0;
-  double _contentWidthAtScale1 = 0;
+  // Slider / seek state
+  double _scrollProgress = 0.0;
+  bool _isSeeking = false;
+  // Zoom animation
+  late final AnimationController _zoomController;
+  Animation<double>? _zoomAnimation;
 
   @override
   void dispose() {
+    _horizontalScrollController.removeListener(_onHorizontalScroll);
     _horizontalScrollController.dispose();
+    _zoomController.dispose();
     super.dispose();
   }
 
@@ -115,6 +123,88 @@ class _MilestoneHomePageState extends State<MilestoneHomePage> {
     super.initState();
     _initLocalPath();
     _loadData().then((_) => _syncFromServer());
+    _horizontalScrollController.addListener(_onHorizontalScroll);
+    _zoomController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 300),
+    );
+  }
+
+  void _animateZoomTo(double targetScale, {int durationMs = 300}) {
+    final oldScale = _scaleFactor;
+    targetScale = targetScale.clamp(0.01, 5.0);
+    if ((targetScale - oldScale).abs() < 1e-6) return;
+
+    final hasClient = _horizontalScrollController.hasClients;
+    final viewport = _viewportWidth > 0
+        ? _viewportWidth
+        : MediaQuery.of(context).size.width;
+    final center = hasClient
+        ? (_horizontalScrollController.offset + viewport / 2)
+        : (viewport / 2);
+
+    // allow caller to customize animation duration
+    _zoomController.stop();
+    _zoomController.duration = Duration(milliseconds: durationMs);
+    _zoomAnimation = Tween(
+      begin: oldScale,
+      end: targetScale,
+    ).animate(CurvedAnimation(parent: _zoomController, curve: Curves.easeOut));
+
+    void animListener() {
+      if (_zoomAnimation == null) return;
+      final current = _zoomAnimation!.value;
+      setState(() => _scaleFactor = current);
+      if (!_horizontalScrollController.hasClients) return;
+      final max = _horizontalScrollController.position.maxScrollExtent;
+      final newCenter = center * (current / oldScale);
+      final newOffset = (newCenter - viewport / 2).clamp(0.0, max);
+      _horizontalScrollController.jumpTo(newOffset);
+    }
+
+    _zoomAnimation!.addListener(animListener);
+    _zoomController.forward(from: 0).whenComplete(() {
+      _zoomAnimation?.removeListener(animListener);
+      _zoomAnimation = null;
+    });
+  }
+
+  void _onHorizontalScroll() {
+    if (_isSeeking) return;
+    if (!_horizontalScrollController.hasClients) return;
+    final max = _horizontalScrollController.position.maxScrollExtent;
+    final prog = max > 0 ? (_horizontalScrollController.offset / max) : 0.0;
+    if ((prog - _scrollProgress).abs() > 0.001) {
+      setState(() {
+        _scrollProgress = prog.clamp(0.0, 1.0);
+      });
+    }
+  }
+
+  void _zoomKeepingCenter(double targetScale) {
+    final oldScale = _scaleFactor;
+    targetScale = targetScale.clamp(0.01, 5.0);
+    if ((targetScale - oldScale).abs() < 1e-6) return;
+
+    final hasClient = _horizontalScrollController.hasClients;
+    final viewport = _viewportWidth > 0
+        ? _viewportWidth
+        : MediaQuery.of(context).size.width;
+    final center = hasClient
+        ? (_horizontalScrollController.offset + viewport / 2)
+        : (viewport / 2);
+
+    setState(() {
+      _scaleFactor = targetScale; // Update scale factor
+    });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_horizontalScrollController.hasClients) return;
+      final max = _horizontalScrollController.position.maxScrollExtent;
+      final newCenter = center * (targetScale / oldScale);
+      final newOffset = (newCenter - viewport / 2).clamp(0.0, max);
+      _horizontalScrollController.jumpTo(newOffset);
+    });
   }
 
   Future<void> _initLocalPath() async {
@@ -964,12 +1054,8 @@ class _MilestoneHomePageState extends State<MilestoneHomePage> {
                         ? constraints.maxWidth
                         : contentWidth;
 
-                    // Store for fit-all button
+                    // Store viewport width for zoom calculations
                     _viewportWidth = constraints.maxWidth;
-                    _contentWidthAtScale1 = totalDays == 0
-                        ? TimelineColumn.columnWidth
-                        : (totalDays * (minSpacing / minGapDays)) +
-                              TimelineColumn.columnWidth;
 
                     return GestureDetector(
                       onTap: () {
@@ -984,11 +1070,55 @@ class _MilestoneHomePageState extends State<MilestoneHomePage> {
                         _baseScaleFactor = _scaleFactor;
                       },
                       onScaleUpdate: (details) {
-                        setState(() {
-                          _scaleFactor =
-                              (_baseScaleFactor * details.horizontalScale)
-                                  .clamp(0.01, 5.0);
-                        });
+                        // Prefer pinch scale when present
+                        final pinchScale = (_baseScaleFactor * details.scale)
+                            .clamp(0.01, 5.0);
+
+                        if ((pinchScale - _scaleFactor).abs() > 0.02) {
+                          // Smooth toward pinch target to reduce sensitivity/jitter
+                          const double smoothing = 0.25; // 0..1
+                          final smoothed =
+                              _scaleFactor +
+                              (pinchScale - _scaleFactor) * smoothing;
+                          _zoomKeepingCenter(smoothed);
+                          return;
+                        }
+
+                        // If no significant pinch, interpret two-finger diagonal slide as zoom control.
+                        final dx = details.focalPointDelta.dx;
+                        final dy = details.focalPointDelta.dy;
+                        final diag = dx + dy; // diagonal component
+
+                        if (diag.abs() > 6.0) {
+                          // Make diagonal slide less sensitive by increasing divisor
+                          const double sensitivity = 1200.0;
+                          final factor = 1.0 - (diag / sensitivity);
+                          final target = (_scaleFactor * factor).clamp(
+                            0.01,
+                            5.0,
+                          );
+                          // Smooth the change to avoid abrupt jumps
+                          const double smoothingDiag = 0.25;
+                          final smoothedTarget =
+                              _scaleFactor +
+                              (target - _scaleFactor) * smoothingDiag;
+                          _zoomKeepingCenter(smoothedTarget);
+                          return;
+                        }
+
+                        // Fallback: horizontal movement -> pan
+                        if (_horizontalScrollController.hasClients &&
+                            dx.abs() > 0.5) {
+                          final max = _horizontalScrollController
+                              .position
+                              .maxScrollExtent;
+                          final newOffset =
+                              (_horizontalScrollController.offset - dx).clamp(
+                                0.0,
+                                max,
+                              );
+                          _horizontalScrollController.jumpTo(newOffset);
+                        }
                       },
                       child: Scrollbar(
                         thumbVisibility: true,
@@ -1146,7 +1276,7 @@ class _MilestoneHomePageState extends State<MilestoneHomePage> {
               ),
             ],
           ),
-          // Floating bottom control bar
+
           Positioned(
             left: 0,
             right: 0,
@@ -1188,9 +1318,7 @@ class _MilestoneHomePageState extends State<MilestoneHomePage> {
                     _ControlButton(
                       icon: Icons.add,
                       onTap: () {
-                        setState(() {
-                          _scaleFactor = (_scaleFactor * 1.3).clamp(0.01, 5.0);
-                        });
+                        _animateZoomTo((_scaleFactor * 1.3));
                       },
                       tooltip: '放大',
                     ),
@@ -1198,9 +1326,7 @@ class _MilestoneHomePageState extends State<MilestoneHomePage> {
                     _ControlButton(
                       icon: Icons.remove,
                       onTap: () {
-                        setState(() {
-                          _scaleFactor = (_scaleFactor / 1.3).clamp(0.01, 5.0);
-                        });
+                        _animateZoomTo((_scaleFactor / 1.3));
                       },
                       tooltip: '缩小',
                     ),
@@ -1837,12 +1963,12 @@ class _EventCardState extends State<EventCard> {
       onTap: widget.isExpanded ? widget.onEdit : widget.onToggleExpand,
       child: AnimatedOpacity(
         duration: const Duration(milliseconds: 300),
-        opacity: _isExpanded ? 1.0 : 0.9,
+        opacity: _isExpanded ? 1.0 : 0.94,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 300),
           curve: Curves.easeInOut,
           decoration: BoxDecoration(
-            color: bgColor.withOpacity(_isExpanded ? 1.0 : 0.9),
+            color: bgColor.withOpacity(_isExpanded ? 1.0 : 0.94),
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
               color: accentColor.withOpacity(_isExpanded ? 0.9 : 0.2),
