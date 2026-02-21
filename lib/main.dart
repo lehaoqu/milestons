@@ -94,6 +94,7 @@ class _MilestoneHomePageState extends State<MilestoneHomePage>
     with SingleTickerProviderStateMixin {
   String _personAName = '皓';
   String _personBName = '晴';
+  String _serverIp = ''; // Start empty
   double _scaleFactor = 1.0;
   double _baseScaleFactor = 1.0;
   List<MilestoneEvent> _events = [];
@@ -122,11 +123,100 @@ class _MilestoneHomePageState extends State<MilestoneHomePage>
   void initState() {
     super.initState();
     _initLocalPath();
-    _loadData().then((_) => _syncFromServer());
+    _loadConfig().then((_) {
+      _loadData().then((_) {
+        if (_serverIp.isNotEmpty) {
+          _syncFromServer();
+        }
+      });
+      if (_serverIp.isEmpty) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _showServerConfigDialog();
+        });
+      }
+    });
     _horizontalScrollController.addListener(_onHorizontalScroll);
     _zoomController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 300),
+    );
+  }
+
+  Future<void> _loadConfig() async {
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final file = File(p.join(directory.path, 'config.json'));
+      if (await file.exists()) {
+        final content = await file.readAsString();
+        final data = json.decode(content);
+        if (data['serverIp'] != null) {
+          setState(() {
+            _serverIp = data['serverIp'];
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('Error loading config: $e');
+    }
+  }
+
+  Future<void> _saveConfig() async {
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final file = File(p.join(directory.path, 'config.json'));
+      await file.writeAsString(json.encode({'serverIp': _serverIp}));
+    } catch (e) {
+      debugPrint('Error saving config: $e');
+    }
+  }
+
+  void _showServerConfigDialog() {
+    final controller = TextEditingController(text: _serverIp);
+    showDialog(
+      context: context,
+      barrierDismissible: _serverIp.isNotEmpty, // Make mandatory if empty
+      builder: (context) => AlertDialog(
+        title: const Text('服务器配置'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('请输入服务器的公网地址（IP:端口）:'),
+            const SizedBox(height: 8),
+            TextField(
+              controller: controller,
+              decoration: const InputDecoration(hintText: '例如: 1.2.3.4:3000'),
+            ),
+          ],
+        ),
+        actions: [
+          if (_serverIp.isNotEmpty)
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+              },
+              child: const Text('取消'),
+            ),
+          ElevatedButton(
+            onPressed: () {
+              final newIp = controller.text.trim();
+              if (newIp.isNotEmpty) {
+                setState(() {
+                  _serverIp = newIp;
+                });
+                _saveConfig();
+                _syncFromServer();
+                Navigator.pop(context);
+              } else if (_serverIp.isNotEmpty) {
+                // If already has an IP and user clears field + hits save,
+                // we treat it as cancel or just don't update.
+                Navigator.pop(context);
+              }
+            },
+            child: const Text('保存'),
+          ),
+        ],
+      ),
     );
   }
 
@@ -215,9 +305,7 @@ class _MilestoneHomePageState extends State<MilestoneHomePage>
   }
 
   Future<void> _syncFromServer() async {
-    final String serverUrl = Platform.isAndroid
-        ? 'http://8.145.33.28:3000/api/milestones'
-        : 'http://8.145.33.28:3000/api/milestones';
+    final String serverUrl = 'http://$_serverIp/api/milestones';
 
     try {
       final response = await http.get(Uri.parse(serverUrl));
@@ -282,9 +370,7 @@ class _MilestoneHomePageState extends State<MilestoneHomePage>
     await _saveData();
 
     // 2. 服务器同步删除
-    final String baseUrl = Platform.isAndroid
-        ? 'http://8.145.33.28:3000/api/milestones'
-        : 'http://8.145.33.28:3000/api/milestones';
+    final String baseUrl = 'http://$_serverIp/api/milestones';
 
     try {
       final response = await http.delete(Uri.parse('$baseUrl/${event.id}'));
@@ -334,9 +420,7 @@ class _MilestoneHomePageState extends State<MilestoneHomePage>
     MilestoneEvent event,
     List<XFile> imageFiles,
   ) async {
-    final String serverUrl = Platform.isAndroid
-        ? 'http://8.145.33.28:3000/api/milestones'
-        : 'http://8.145.33.28:3000/api/milestones';
+    final String serverUrl = 'http://$_serverIp/api/milestones';
 
     final directory = await getApplicationDocumentsDirectory();
     final imagesDir = Directory(p.join(directory.path, 'milestone_images'));
@@ -399,9 +483,7 @@ class _MilestoneHomePageState extends State<MilestoneHomePage>
     List<String> existingUrls,
     List<XFile> newFiles,
   ) async {
-    final String baseUrl = Platform.isAndroid
-        ? 'http://8.145.33.28:3000/api/milestones'
-        : 'http://8.145.33.28:3000/api/milestones';
+    final String baseUrl = 'http://$_serverIp/api/milestones';
 
     try {
       var request = http.MultipartRequest(
@@ -983,9 +1065,14 @@ class _MilestoneHomePageState extends State<MilestoneHomePage>
         ),
         actions: [
           IconButton(
+            tooltip: '服务器配置',
+            onPressed: _showServerConfigDialog,
+            icon: const Icon(Icons.dns_outlined),
+          ),
+          IconButton(
             tooltip: '修改称呼',
             onPressed: _openEditNamesDialog,
-            icon: const Icon(Icons.edit),
+            icon: const Icon(Icons.edit_outlined),
           ),
         ],
       ),
